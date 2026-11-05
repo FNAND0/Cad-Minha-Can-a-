@@ -6,7 +6,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check app.js && node --check config.js && node --check data.js"
+    "check": "node --check server.js && node --check app.js && node --check config.js && node --check data.js && node --check scripts/ws-smoke-test.js",
+    "smoke": "node scripts/ws-smoke-test.js"
   },
   "dependencies": {
     "dotenv": "^16.4.7",

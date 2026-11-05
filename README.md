@@ -1,76 +1,414 @@
 # Rio Radar
 
-Dashboard web para simulação de rastreamento fluvial na Amazônia, da região de Manaus até Fonte Boa.
+Painel real-time de telemetria fluvial para a Amazônia. O sistema combina Google Maps, AISStream, APRS-IS, AISHub, ingestão HTTP e WebSocket em um único bridge Node.js.
 
-## Executar
+Este projeto não cria ou reconstrói posições fictícias. Os marcadores aparecem somente com dados reais recebidos por posição AIS/APRS ou por um endpoint de ingestão autorizado.
 
-1. No Google Cloud Console, habilite **Maps JavaScript API** e crie uma chave restrita ao domínio do projeto.
-2. Configure `config.js` com a chave e o WebSocket do bridge, quando disponível.
-3. Instale o bridge e inicie o app completo:
+## Visão Geral
+
+```text
+AISStream / APRS-IS / receptor / AISHub
+                 |
+                 v
+       server.js (Node.js bridge)
+                 |
+     +-----------+-----------+
+     |                       |
+     v                       v
+GET /api/vessels       WebSocket /ws
+     |                       |
+     +-----------+-----------+
+                 |
+                 v
+      app.js + Google Maps
+```
+
+## Recursos
+
+- Exibição exclusiva de posições reais recebidas.
+- Caixa geográfica ampla da Amazônia configurável por ambiente.
+- Conexão WebSocket AISStream com assinatura, reconexão e compressão.
+- Filtros AIS por MMSI e tipos de mensagem.
+- Dados estáticos: nome da embarcação, indicativo, IMO, tipo, destino e calado.
+- Reconhecimento de `PositionReport`, mensagens Classe B e transmissão AIS de longo alcance.
+- Conexão APRS-IS opcional.
+- Polling opcional de AISHub.
+- Históricos limitados aos últimos 60 pontos por MMSI.
+- Snapshot HTTP da última posição e dos dados estáticos.
+- Busca por nome, MMSI, indicativo ou destino.
+- Atualização suave por `requestAnimationFrame`, sem recriar marcadores.
+- Marcação de sinal vencido, sem retorno de movimento fictício.
+- Interface desktop lateral e gaveta inferior em telas menores que 768 px.
+
+## Requisitos
+
+- Node.js 18 ou superior.
+- npm.
+- Navegador moderno.
+- Chave Maps JavaScript API do Google Cloud.
+- Opcional: chave AISStream e endereço APRS-IS.
+
+## Configuração
+
+### 1. Google Maps
+
+1. No Google Cloud Console, habilite `Maps JavaScript API`.
+2. Crie uma chave restrita por domínio HTTP/HTTPS.
+3. Configure o navegador em `config.js`:
+
+```js
+const RioRadarConfig = Object.freeze({
+  googleMapsApiKey: "SUA_CHAVE_GOOGLE_MAPS",
+  radioWebSocketUrl: `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/ws`,
+  radioReconnectDelayMs: 5000,
+  radioSignalTimeoutMs: 60000,
+  radioMaxReconnectDelayMs: 30000
+});
+```
+
+A chave Google Maps é usada pelo navegador. Restrinja-a por domínio e API para reduzir abuso.
+
+### 2. Ambiente do servidor
+
+Copie o exemplo:
+
+```bash
+cp .env.example .env
+```
+
+Variáveis disponíveis:
+
+```env
+PORT=8080
+HOST=0.0.0.0
+
+AISSTREAM_API_KEY=SUA_CHAVE_AISSTREAM
+AISSTREAM_BOUNDING_BOXES=[[[5.3,-74.0],[-18.0,-44.0]]]
+AISSTREAM_FILTER_MMSI=
+AISSTREAM_FILTER_TYPES=PositionReport,ShipStaticData
+
+AREA_MIN_LAT=-18.0
+AREA_MAX_LAT=5.3
+AREA_MIN_LNG=-74.0
+AREA_MAX_LNG=-44.0
+
+APRS_IS_HOST=
+APRS_IS_PORT=14580
+APRS_IS_CALLSIGN=N0CALL
+APRS_IS_PASSCODE=-1
+APRS_IS_FILTER=r -3.1190 -60.0217 150
+APRS_IS_RETRY_MS=10000
+
+AISHUB_USERNAME=
+AISHUB_API_KEY=
+AISHUB_POLL_MS=15000
+```
+
+`AISSTREAM_BOUNDING_BOXES` usa pares `[latitude, longitude]`: primeiro o canto sudoeste e depois o nordeste. `AREA_*` é o filtro adicional aplicado pelo bridge.
+
+Nunca adicione `.env` ao Git. O projeto já possui `.gitignore` para isso.
+
+## Uso local
+
+### Linux ou macOS
 
 ```bash
 npm install
 npm start
 ```
 
-Acesse `http://localhost:8080`. Para apenas visualizar os arquivos estáticos, `python3 -m http.server 4173` continua disponível.
+Acesse:
 
-Para o APRS-IS:
+```text
+http://localhost:8080
+```
+
+### Windows PowerShell
+
+```powershell
+npm install
+Copy-Item .env.example .env
+npm start
+```
+
+Edite `.env` com o Bloco de Notas ou VS Code:
+
+```powershell
+notepad .env
+```
+
+Depois abra:
+
+```text
+http://localhost:8080
+```
+
+### GitHub Codespaces
+
+1. Abra a porta `8080` como pública ou privada conforme sua necessidade.
+2. Configure `.env` dentro do Codespace.
+3. Inicie:
 
 ```bash
-APRS_IS_HOST=rotate.aprs2.net APRS_IS_CALLSIGN=SEUCALL APRS_IS_PASSCODE=12345 npm start
+npm start
 ```
 
-Para AISStream, defina `AISSTREAM_API_KEY` no arquivo `.env` local (copie `.env.example`). A chave não deve ser enviada ao repositório. A área padrão cobre Manaus e o rio próximo; substitua `AISSTREAM_BOUNDING_BOXES` por pares `[[southWestLat,southWestLon],[northEastLat,northEastLon]]`.
+4. Abra a URL encaminhada pelo Codespace para a porta 8080.
 
-O coletor suporta assinaturas geográficas, filtros por MMSI (`AISSTREAM_FILTER_MMSI`) e tipos de mensagem (`AISSTREAM_FILTER_TYPES`). Ele recebe posições, mensagens de classe B, transmissão de longo alcance, dados estáticos do navio e dados de viagem quando disponíveis na assinatura.
+Para o navegador usar HTTPS/WSS, a porta precisa ser publicada com HTTPS; o frontend troca automaticamente entre `ws://` e `wss://`.
 
-- `/health`: estado operacional JSON do HTTP, clientes WebSocket e AISStream.
-- `/api/status`: métricas detalhadas sem cache, incluindo tipos de mensagem, MMSIs vistos, mensagens ignoradas e reconexões.
-- `/api/vessels`: snapshot JSON da última posição e dos últimos dados estáticos recebidos por MMSI, sem simulação.
-- `POST /ingest/ais`: ingestão de posição ou dados estáticos AIS pelo backend.
-- `POST /ingest/radio`: ingestão de fontes APRS, LoRa, checkpoints ou rádio em geral.
-- `ws://host/ws` ou `wss://host/ws`: entrega normalizada para o painel em tempo real.
+### Apenas a interface estática
 
-Mensagens estáticas podem atualizar nome, indicativo, IMO, tipo, destino, calado e última origem. Mensagens sem latitude não sobrescrevem coordenadas existentes. Por padrão, a assinatura usa `PositionReport`; tipos adicionais devem ser definidos apenas se validados pela sua conta AISStream.
+```bash
+python3 -m http.server 4173
+```
 
-Cada pacote válido recebido via `/ws` é aplicado imediatamente à embarcação correspondente. Posições antigas são descartadas por timestamp, novos destinos são animados por `requestAnimationFrame` sem recriar marcadores e a trilha mantém apenas os últimos 60 pontos por embarcação para limitar memória.
+O painel abrirá em `http://localhost:4173`, mas Google Maps e o stream local de telemetria continuam dependendo da configuração adequada.
+
+### Docker
+
+Crie um arquivo `Dockerfile` opcional:
+
+```dockerfile
+FROM node:20-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --omit=dev
+COPY . .
+EXPOSE 8080
+CMD ["npm", "start"]
+```
+
+Executar:
+
+```bash
+docker build -t rio-radar .
+docker run --env-file .env -p 8080:8080 rio-radar
+```
+
+Não coloque `.env` dentro da imagem final. Passe valores com `--env-file`, secrets ou variáveis do provedor.
+
+### Servidor HTTP publicado com Nginx
+
+O WebSocket exige upgrade de conexão:
+
+```nginx
+location /ws {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+}
+```
+
+Use HTTPS no domínio público e configure `radioWebSocketUrl` para que derive automaticamente de `window.location`.
+
+## AISStream
+
+A chave fica somente em `.env`, não em `app.js` ou `index.html`.
+
+Assinatura mínima recomendada:
 
 ```env
-AISSTREAM_API_KEY=SUA_CHAVE_AISSTREAM
-AISSTREAM_BOUNDING_BOXES=[[[-4.5,-62.5],[-2.5,-58.5]]]
+AISSTREAM_API_KEY=SUA_CHAVE
+AISSTREAM_BOUNDING_BOXES=[[[5.3,-74.0],[-18.0,-44.0]]]
+AISSTREAM_FILTER_TYPES=PositionReport,ShipStaticData
 ```
 
-Para AISHub, defina `AISHUB_USERNAME` (e opcionalmente `AISHUB_API_KEY`) antes de iniciar.
+Filtros opcionais:
 
-POSTs HTTP aceitos:
+```env
+AISSTREAM_FILTER_MMSI=538007480,636015988,316003701
+```
 
-- `POST /ingest/ais` com `boatId`, `lat`, `lng`, `speed`, `heading`, `source` ou `mmsi`.
-- `POST /ingest/radio` com o mesmo formato JSON.
+Ao receber `ShipStaticData`, o backend atualiza nome, indicativo, IMO, tipo, destino e calado sem criar uma nova coordenada. Dados estáticos não substituem a última posição real.
 
-O bridge normaliza as mensagens e transmite por `/ws`.
+Se o AISStream fechar anormalmente, o bridge usa reconexão exponencial com limite configurado. O mapa mantém os últimos dados válidos até receber outro pacote ou expirar pelo timeout.
 
-> `config.js` deve ser preenchido antes do uso com o Google Maps. O modo simulado continua disponível sem servidor de rádio.
+## APRS-IS
 
-## Estrutura
+Exemplo:
 
-- `index.html`: interface semântica, painel lateral, gaveta mobile e fallback do mapa.
-- `style.css`: tema cyber-industrial escuro e layout responsivo.
-- `data.js`: FeatureCollection GeoJSON da calha fluvial e das embarcações.
-- `app.js`: Google Maps, cache de marcadores, interpolação linear, ruído de GPS e WebSocket opcional.
-- `config.js`: chave da Maps JavaScript API e endereço do stream de rádio.
-- `server.js`: servidor HTTP/WebSocket, ingestão APRS/AIS/AISHub e filtros geográficos.
-- `package.json`: dependências e scripts de execução do bridge Node.js.
+```bash
+APRS_IS_HOST=rotate.aprs2.net \
+APRS_IS_PORT=14580 \
+APRS_IS_CALLSIGN=SEUCALL \
+APRS_IS_PASSCODE=12345 \
+APRS_IS_FILTER='r -3.1190 -60.0217 150' \
+npm start
+```
 
-## Características técnicas
+O passcode APRS não é criptográfico para cadastros públicos; ainda assim, mantenha credenciais privadas fora do Git.
 
-- Vanilla JS ES6+, HTML5 e CSS modular sem frameworks.
-- Marcadores Google reutilizados em memória com `Map` e atualizados por `setPosition()` e `setIcon()`.
-- Interpolação da rota com `Lerp`, processamento de distância em quilômetros e ruído gaussiano leve.
-- Relógio da telemetria convertido para `America/Manaus` (`UTC-4`) e simulação interrompida ao ocultar a aba para reduzir consumo de CPU e bateria.
-- Estilo escuro nativo do Google Maps, sem tiles raster externos adicionais.
-- WebSocket opcional para ingestão de pacotes de rádio com reconexão automática.
-- Modo híbrido: uma embarcação com telemetria fresca interrompe sua simulação; ao passar o timeout, volta ao movimento local automaticamente.
-- Pacotes aceitos podem informar `source` como `radio`, `aprs`, `lora`, `ais`, `checkpoint` ou `satellite`.
-- `radioSignalTimeoutMs` e `radioMaxReconnectDelayMs` controlam respectivamente frescor do sinal e limite da reconexão WebSocket.
-- Layout desktop em painel lateral; telas menores usam bottom sheet.
+## AISHub
+
+Configure:
+
+```env
+AISHUB_USERNAME=SEU_USUARIO
+AISHUB_API_KEY=SUA_CHAVE_OPCIONAL
+AISHUB_POLL_MS=15000
+```
+
+As consultas respeitam `AREA_*`. O intervalo mínimo deve seguir os termos e limites da conta AISHub.
+
+## Endpoints
+
+### Estado do sistema
+
+```bash
+curl http://localhost:8080/health
+curl http://localhost:8080/api/status
+```
+
+`/api/status` inclui conexão AISStream, mensagens recebidas, tipos, MMSIs, posições, dados estáticos, erros ignorados e reconexões.
+
+### Embarcações atuais
+
+```bash
+curl http://localhost:8080/api/vessels
+```
+
+Retorna o último snapshot por MMSI. Mensagens simuladas não são incluídas.
+
+### Busca
+
+```bash
+curl 'http://localhost:8080/api/search?q=Dona%20Lita'
+```
+
+Busca por nome AIS, MMSI, indicativo ou destino. Sem correspondência, retorna `matches: []`.
+
+### Ingestão HTTP
+
+```bash
+curl -X POST http://localhost:8080/ingest/ais \
+  -H 'Content-Type: application/json' \
+  -d '{"mmsi":"710006963","lat":-3.16264,"lng":-59.98981,"speed":0,"heading":220,"source":"ais"}'
+```
+
+Também aceita `POST /ingest/radio` para APRS, LoRa, checkpoints ou receptores locais.
+
+Pacote mínimo:
+
+```json
+{
+  "boatId": "710006963",
+  "lat": -3.16264,
+  "lng": -59.98981,
+  "speed": 0,
+  "heading": 220,
+  "source": "ais",
+  "timestamp": 1793859158
+}
+```
+
+Pacote estático sem coordenada:
+
+```json
+{
+  "boatId": "710006963",
+  "name": "Nome Real do AIS",
+  "callSign": "PQ3628",
+  "imo": "9990001",
+  "shipType": "Passenger",
+  "destination": "Manaus",
+  "draught": 12.2,
+  "staticOnly": true,
+  "source": "ais"
+}
+```
+
+## WebSocket
+
+URL local:
+
+```text
+ws://localhost:8080/ws
+```
+
+HTTPS requer:
+
+```text
+wss://SEU_DOMINIO/ws
+```
+
+O bridge envia JSON normalizado:
+
+```json
+{
+  "boatId": "710006963",
+  "lat": -3.16264,
+  "lng": -59.98981,
+  "speed": 0,
+  "heading": 220,
+  "source": "ais",
+  "quality": "AISStream",
+  "timestamp": 1793859158
+}
+```
+
+A data `timestamp` deve representar o horário da última transmissão. A aplicação descarta posições atrasadas em relação ao último MMSI recebido.
+
+## Estrutura do Projeto
+
+- `index.html`: interface semântica, painel, controles e fallback.
+- `style.css`: tema amazônico escuro, telemetria e responsividade.
+- `data.js`: rota fluvial e estrutura GeoJSON sem embarcações simuladas.
+- `app.js`: Google Maps, cache de marcadores, animação e WebSocket.
+- `config.js`: chave Google Maps e parâmetros de telemetria.
+- `server.js`: HTTP, WebSocket, AISStream, APRS, AISHub, cache e histórico curto.
+- `package.json`: scripts e dependências Node.js.
+- `.env.example`: modelo público sem credenciais reais.
+
+## Validação
+
+Verifique todos os módulos:
+
+```bash
+npm run check
+```
+
+Teste o health check:
+
+```bash
+curl http://localhost:8080/health
+```
+
+Teste ingestão e recebimento:
+
+```bash
+npm run smoke
+```
+
+Se essa ferramenta não existir, use um cliente WebSocket em `ws://localhost:8080/ws`, envie `POST /ingest/ais` e confirme o recebimento JSON.
+
+Validações recomendadas:
+
+- O mapa não contém embarcações antes da primeira posição real.
+- MMSI repetido atualiza um único marcador.
+- Novo MMSI cria uma única entrada.
+- Pacote antigo não sobrescreve posição recente.
+- Mensagem estática não remove coordenadas existentes.
+- MMSI sem posição não recebe marcador no mapa.
+- `/api/vessels` não inclui dados fictícios.
+- Busca por nome vazio retorna `matches: []` sem gerar fallback falso.
+
+## Segurança
+
+- O `.env` nunca deve ser commitado.
+- Rotacione a chave AISStream se ela aparecer em logs, commits ou capturas de tela.
+- Restrinja a chave Google Maps por domínio e API.
+- Restrinja CORS e acesso POST antes de publicar a API em internet.
+- Proteja `/ingest/ais` e `/ingest/radio` com autenticação em produção.
+- Use HTTPS/WSS e um proxy reverso para rede pública.
+- Não trate ausência de sinal como embarcação parada; registre apenas ausência ou expiração de transmissão.
+
+## Limitações
+
+- AISStream fornece transmissão em tempo real; não garante cobertura offline ou histórico.
+- Nem toda embarcação regional usa AIS.
+- Dados estáticos podem chegar separadamente da posição.
+- `F/B Dona Lita` somente poderá ser localizado por MMSI, nome confirmado por AIS Static Data ou fonte histórica autorizada.
+- Fonte ausência no snapshot não significa ausência física da embarcação.
