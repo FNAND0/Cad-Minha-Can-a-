@@ -336,12 +336,12 @@ function connectAisStream() {
   const url = "wss://stream.aisstream.io/v0/stream";
   let socket;
   let reconnectTimer;
-  let reconnectDelay = 5000;
+  let reconnectDelay = 30000;
 
   const connect = () => {
-    socket = new WebSocket(url);
+    socket = new WebSocket(url, { perMessageDeflate: true, handshakeTimeout: 15000 });
     socket.on("open", () => {
-      reconnectDelay = 5000;
+      reconnectDelay = 30000;
       aisMetrics.connected = true;
       const filters = parseAisMmsiFilter();
       const subscription = {
@@ -349,13 +349,7 @@ function connectAisStream() {
         BoundingBoxes: parseBoundingBoxes(),
         FilterMessageTypes: (process.env.AISSTREAM_FILTER_TYPES
           ? process.env.AISSTREAM_FILTER_TYPES.split(/[;,\s]+/).map((value) => value.trim()).filter(Boolean)
-          : [
-              "PositionReport",
-              "StandardClassBPositionReport",
-              "ExtendedClassBPositionReport",
-              "LongRangeAISBroadcastMessage",
-              "ShipStaticData"
-            ])
+          : ["PositionReport"])
       };
       if (filters) subscription.FiltersShipMMSI = filters;
       socket.send(JSON.stringify(subscription));
@@ -380,7 +374,7 @@ function connectAisStream() {
       aisMetrics.reconnects++;
       clearTimeout(reconnectTimer);
       reconnectTimer = setTimeout(connect, reconnectDelay);
-      reconnectDelay = Math.min(reconnectDelay * 2, 60000);
+      reconnectDelay = Math.min(reconnectDelay * 2, 300000);
     });
   };
   connect();

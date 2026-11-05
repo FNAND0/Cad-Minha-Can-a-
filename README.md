@@ -31,7 +31,7 @@ O coletor suporta assinaturas geográficas, filtros por MMSI (`AISSTREAM_FILTER_
 - `POST /ingest/radio`: ingestão de fontes APRS, LoRa, checkpoints ou rádio em geral.
 - `ws://host/ws` ou `wss://host/ws`: entrega normalizada para o painel em tempo real.
 
-Mensagens estáticas podem atualizar nome, indicativo, IMO, tipo, destino, calado e última origem. Mensagens sem latitude não sobrescrevem coordenadas existentes.
+Mensagens estáticas podem atualizar nome, indicativo, IMO, tipo, destino, calado e última origem. Mensagens sem latitude não sobrescrevem coordenadas existentes. Por padrão, a assinatura usa `PositionReport`; tipos adicionais devem ser definidos apenas se validados pela sua conta AISStream.
 
 ```env
 AISSTREAM_API_KEY=SUA_CHAVE_AISSTREAM
