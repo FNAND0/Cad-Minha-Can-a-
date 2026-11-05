@@ -5,7 +5,10 @@
   const route = routeFeature.geometry.coordinates;
   const vessels = RioTelemetryData.vessels.features;
   const markerCache = new Map();
-  const state = { map: null, selectedId: null, lastUpdate: 0, frame: 0, running: true };
+  const state = {
+    map: null, selectedId: null, lastUpdate: 0, frame: 0, running: true,
+    radioSocket: null, reconnectTimer: 0, reconnectDelayMs: RioRadarConfig.radioReconnectDelayMs
+  };
 
   const refs = {
     loader: document.getElementById("mapLoader"), error: document.getElementById("mapError"),
@@ -77,7 +80,11 @@
   const vesselStates = vessels.map((feature, index) => ({
     feature,
     progress: nearestProgress(feature.geometry.coordinates),
-    phase: index * 1.37
+    phase: index * 1.37,
+    source: "simulacao",
+    lastRealPacketAt: 0,
+    realStatus: false,
+    originalStatus: feature.properties.status
   }));
 
   function nauticalIcon(status, selected = false, heading = 0) {
@@ -148,8 +155,22 @@
     refs.loader.style.display = "none";
   }
 
-  function updateVessel(vessel, elapsedSeconds) {
+  function updateVessel(vessel, elapsedSeconds, timestamp = performance.now()) {
     const properties = vessel.feature.properties;
+
+    // Telemetry real suspende only the vessel that has fresh packets.
+    if (vessel.realStatus) {
+      if (timestamp - vessel.lastRealPacketAt >= RioRadarConfig.radioSignalTimeoutMs) {
+        vessel.realStatus = false;
+        vessel.source = "simulacao";
+        properties.status = vessel.originalStatus;
+        properties.origem_telemetria = "simulacao";
+      } else {
+        updateMarker(vessel, properties.rumo_graus);
+        return;
+      }
+    }
+
     if (properties.status === "atracado" || properties.status === "falha_sinal") {
       updateMarker(vessel, properties.rumo_graus);
       return;
@@ -218,6 +239,14 @@
     refs.count.textContent = String(vessels.length);
   }
 
+  function transmissionLabel(properties) {
+    if (properties.status === "falha_sinal") return "SEM SINAL";
+    if (properties.origem_telemetria && properties.origem_telemetria !== "simulacao") {
+      return `${String(properties.origem_telemetria).toUpperCase()} / ${properties.qualidade_sinal || "ATIVO"}`;
+    }
+    return `SIMULAÇÃO / BATERIA ${properties.bateria_rastreador}%`;
+  }
+
   function selectVessel(id) {
     state.selectedId = id;
     const feature = vessels.find((item) => item.properties.id === id);
@@ -233,7 +262,7 @@
         <div class="detail-cell"><span>Latitude</span><strong>${toDMS(latitude, "lat")}</strong></div>
         <div class="detail-cell"><span>Longitude</span><strong>${toDMS(longitude, "lon")}</strong></div>
         <div class="detail-cell"><span>Rumo</span><strong>${Math.round(properties.rumo_graus)}°</strong></div>
-        <div class="detail-cell"><span>Transmissão</span><strong>${properties.status === "falha_sinal" ? "SEM SINAL" : `BATERIA ${properties.bateria_rastreador}%`}</strong></div>
+        <div class="detail-cell"><span>Transmissão</span><strong>${transmissionLabel(properties)}</strong></div>
       </div>`;
 
     vesselStates.forEach((vessel) => updateMarker(vessel, vessel.feature.properties.rumo_graus));
@@ -251,7 +280,7 @@
     state.lastUpdate = timestamp;
 
     if (timestamp - state.lastFrame > 250) {
-      vesselStates.forEach((vessel) => updateVessel(vessel, elapsedSeconds));
+      vesselStates.forEach((vessel) => updateVessel(vessel, elapsedSeconds, timestamp));
       if (state.selectedId) updateDetailCoordinates(state.selectedId);
       state.lastFrame = timestamp;
     }
@@ -269,6 +298,7 @@
       cells[2].textContent = toDMS(latitude, "lat");
       cells[3].textContent = toDMS(longitude, "lon");
       cells[4].textContent = `${Math.round(properties.rumo_graus)}°`;
+      cells[5].textContent = transmissionLabel(properties);
     }
   }
 
@@ -282,6 +312,9 @@
       state.lastFrame = 0;
       state.lastUpdate = 0;
       state.frame = requestAnimationFrame(simulationLoop);
+      if (RioRadarConfig.radioWebSocketUrl && (!state.radioSocket || state.radioSocket.readyState > 1)) {
+        connectRadioStream();
+      }
     }
   }
 
@@ -313,19 +346,85 @@
     }, 1000);
   }
 
+  function normalizePacketTimestamp(value) {
+    if (!Number.isFinite(value)) return Date.now();
+    const numeric = Number(value);
+    return numeric > 100000000000 ? numeric : numeric * 1000;
+  }
+
   function processRadioPacket(packet) {
-    const boatId = String(packet.boatId || packet.id || "");
-    const feature = vessels.find((item) => item.properties.id === boatId);
-    if (!feature || !Number.isFinite(packet.lat) || !Number.isFinite(packet.lng)) return;
+    const boatId = String(packet.boatId || packet.id || "").trim();
+    if (!boatId) return;
+    let feature = vessels.find((item) => item.properties.id === boatId);
+    const latitude = Number(packet.lat);
+    const longitude = Number(packet.lng);
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
+    if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) return;
 
-    feature.geometry.coordinates = [Number(packet.lng), Number(packet.lat)];
-    feature.properties.velocidade_nos = Number.isFinite(packet.speed) ? Number(packet.speed) : feature.properties.velocidade_nos;
-    feature.properties.rumo_graus = Number.isFinite(packet.heading) ? Number(packet.heading) : feature.properties.rumo_graus;
-    feature.properties.status = "em_navegacao";
+    let vessel = vesselStates.find((item) => item.feature.properties.id === boatId);
+    if (!feature) {
+      feature = {
+        type: "Feature",
+        geometry: { type: "Point", coordinates: [longitude, latitude] },
+        properties: {
+          id: boatId,
+          nome: packet.name || packet.vesselName || `Embarcação ${boatId}`,
+          tipo: String(packet.source || "radio").toUpperCase(),
+          velocidade_nos: 0,
+          rumo_graus: 0,
+          status: "em_navegacao",
+          proxima_parada: "Não informada",
+          bateria_rastreador: 0,
+          origem_telemetria: "ais"
+        }
+      };
+      vessels.push(feature);
+      vessel = {
+        feature,
+        progress: nearestProgress(feature.geometry.coordinates),
+        phase: vesselStates.length * 1.37,
+        source: "ais",
+        lastRealPacketAt: 0,
+        realStatus: false,
+        originalStatus: "em_navegacao"
+      };
+      vesselStates.push(vessel);
+      renderList();
 
-    const vessel = vesselStates.find((item) => item.feature.properties.id === boatId);
-    if (vessel) vessel.progress = nearestProgress(feature.geometry.coordinates);
-    if (markerCache.has(boatId)) updateMarker(vessel || { feature }, feature.properties.rumo_graus);
+      if (state.map) {
+        const marker = new google.maps.Marker({
+          position: { lat: latitude, lng: longitude },
+          map: state.map,
+          title: feature.properties.nome,
+          icon: nauticalIcon("em_navegacao", false, 0)
+        });
+        marker.addListener("click", () => selectVessel(boatId));
+        markerCache.set(boatId, marker);
+      }
+    }
+
+    const speed = Number(packet.speed);
+    const heading = Number(packet.heading);
+    const packetTimestamp = normalizePacketTimestamp(Number(packet.timestamp));
+    const allowedSources = new Set(["aprs", "lora", "ais", "checkpoint", "radio", "satellite"]);
+    const source = allowedSources.has(String(packet.source || "").toLowerCase())
+      ? String(packet.source).toLowerCase()
+      : "radio";
+
+    feature.geometry.coordinates = [longitude, latitude];
+    feature.properties.velocidade_nos = Number.isFinite(speed) ? Math.max(0, speed) : feature.properties.velocidade_nos;
+    feature.properties.rumo_graus = Number.isFinite(heading) ? (heading + 360) % 360 : feature.properties.rumo_graus;
+    feature.properties.status = packet.status === "atracado" ? "atracado" : "em_navegacao";
+    feature.properties.origem_telemetria = source;
+    feature.properties.timestamp_telemetria = packetTimestamp;
+    feature.properties.qualidade_sinal = packet.quality || packet.rssi || "recebido";
+
+    vessel.realStatus = true;
+    vessel.source = source;
+    vessel.lastRealPacketAt = performance.now();
+    vessel.progress = nearestProgress(feature.geometry.coordinates);
+
+    if (markerCache.has(boatId)) updateMarker(vessel, feature.properties.rumo_graus);
     if (state.selectedId === boatId) updateDetailCoordinates(boatId);
   }
 
@@ -333,24 +432,42 @@
     const url = RioRadarConfig.radioWebSocketUrl;
     if (!url || url === "") return;
 
-    let socket;
     try {
-      socket = new WebSocket(url);
+      state.radioSocket = new WebSocket(url);
     } catch (error) {
       console.error("Não foi possível abrir o stream de rádio:", error);
+      scheduleRadioReconnect();
       return;
     }
 
-    socket.addEventListener("message", (event) => {
+    state.radioSocket.addEventListener("message", (event) => {
       try {
         processRadioPacket(JSON.parse(event.data));
       } catch (error) {
         console.warn("Pacote de rádio inválido:", error);
       }
     });
-    socket.addEventListener("close", () => {
-      if (!document.hidden) window.setTimeout(connectRadioStream, RioRadarConfig.radioReconnectDelayMs);
+    state.radioSocket.addEventListener("open", () => {
+      state.reconnectDelayMs = RioRadarConfig.radioReconnectDelayMs;
     });
+    state.radioSocket.addEventListener("close", () => {
+      scheduleRadioReconnect();
+    });
+    state.radioSocket.addEventListener("error", () => {
+      state.radioSocket?.close();
+    });
+  }
+
+  function scheduleRadioReconnect() {
+    if (document.hidden || state.reconnectTimer) return;
+    state.reconnectTimer = window.setTimeout(() => {
+      state.reconnectTimer = 0;
+      connectRadioStream();
+      state.reconnectDelayMs = Math.min(
+        state.reconnectDelayMs * 2,
+        RioRadarConfig.radioMaxReconnectDelayMs
+      );
+    }, state.reconnectDelayMs);
   }
 
   function loadGoogleMaps() {

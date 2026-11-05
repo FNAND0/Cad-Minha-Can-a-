@@ -5,14 +5,37 @@ Dashboard web para simulação de rastreamento fluvial na Amazônia, da região 
 ## Executar
 
 1. No Google Cloud Console, habilite **Maps JavaScript API** e crie uma chave restrita ao domínio do projeto.
-2. Configure `config.js` com a chave e, opcionalmente, o endereço WebSocket do gateway de rádio.
-3. Inicie o servidor e acesse o app:
+2. Configure `config.js` com a chave e o WebSocket do bridge, quando disponível.
+3. Instale o bridge e inicie o app completo:
 
 ```bash
-python3 -m http.server 4173
+npm install
+npm start
 ```
 
-Acesse `http://localhost:4173`.
+Acesse `http://localhost:8080`. Para apenas visualizar os arquivos estáticos, `python3 -m http.server 4173` continua disponível.
+
+Para o APRS-IS:
+
+```bash
+APRS_IS_HOST=rotate.aprs2.net APRS_IS_CALLSIGN=SEUCALL APRS_IS_PASSCODE=12345 npm start
+```
+
+Para AISStream, defina `AISSTREAM_API_KEY` no arquivo `.env` local (copie `.env.example`). A chave não deve ser enviada ao repositório. A área padrão cobre Manaus e o rio próximo; substitua `AISSTREAM_BOUNDING_BOXES` por pares `[[southWestLat,southWestLon],[northEastLat,northEastLon]]`.
+
+```env
+AISSTREAM_API_KEY=SUA_CHAVE_AISSTREAM
+AISSTREAM_BOUNDING_BOXES=[[[-4.5,-62.5],[-2.5,-58.5]]]
+```
+
+Para AISHub, defina `AISHUB_USERNAME` (e opcionalmente `AISHUB_API_KEY`) antes de iniciar.
+
+POSTs HTTP aceitos:
+
+- `POST /ingest/ais` com `boatId`, `lat`, `lng`, `speed`, `heading`, `source` ou `mmsi`.
+- `POST /ingest/radio` com o mesmo formato JSON.
+
+O bridge normaliza as mensagens e transmite por `/ws`.
 
 > `config.js` deve ser preenchido antes do uso com o Google Maps. O modo simulado continua disponível sem servidor de rádio.
 
@@ -23,6 +46,8 @@ Acesse `http://localhost:4173`.
 - `data.js`: FeatureCollection GeoJSON da calha fluvial e das embarcações.
 - `app.js`: Google Maps, cache de marcadores, interpolação linear, ruído de GPS e WebSocket opcional.
 - `config.js`: chave da Maps JavaScript API e endereço do stream de rádio.
+- `server.js`: servidor HTTP/WebSocket, ingestão APRS/AIS/AISHub e filtros geográficos.
+- `package.json`: dependências e scripts de execução do bridge Node.js.
 
 ## Características técnicas
 
@@ -32,4 +57,7 @@ Acesse `http://localhost:4173`.
 - Relógio da telemetria convertido para `America/Manaus` (`UTC-4`) e simulação interrompida ao ocultar a aba para reduzir consumo de CPU e bateria.
 - Estilo escuro nativo do Google Maps, sem tiles raster externos adicionais.
 - WebSocket opcional para ingestão de pacotes de rádio com reconexão automática.
+- Modo híbrido: uma embarcação com telemetria fresca interrompe sua simulação; ao passar o timeout, volta ao movimento local automaticamente.
+- Pacotes aceitos podem informar `source` como `radio`, `aprs`, `lora`, `ais`, `checkpoint` ou `satellite`.
+- `radioSignalTimeoutMs` e `radioMaxReconnectDelayMs` controlam respectivamente frescor do sinal e limite da reconexão WebSocket.
 - Layout desktop em painel lateral; telas menores usam bottom sheet.
