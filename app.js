@@ -213,6 +213,25 @@
     refs.count.textContent = String(vessels.length);
   }
 
+  function cleanAisText(value) {
+    return typeof value === "string" ? value.replace(/\0/g, "").replace(/\s+/g, " ").trim() : "";
+  }
+
+  function aisShipType(value) {
+    const code = Number(value);
+    if (!Number.isFinite(code)) return cleanAisText(value) || "Tipo não informado";
+    if (code === 0) return "Tipo não informado";
+    if (code >= 20 && code <= 29) return "Embarcação militar";
+    if (code >= 30 && code <= 39) return "Embarcação pesqueira/trabalho";
+    if (code >= 40 && code <= 49) return "Passageiros";
+    if (code >= 50 && code <= 59) return "Portuária / auxílio à navegação";
+    if (code >= 60 && code <= 69) return "Passageiros / ferry";
+    if (code >= 70 && code <= 79) return "Carga / cargueiro";
+    if (code >= 80 && code <= 89) return "Carga líquida / tanque";
+    if (code >= 90 && code <= 99) return "Outro tipo de embarcação";
+    return "Tipo não informado";
+  }
+
   function transmissionLabel(properties) {
     if (properties.status === "sem_posicao") return "AIS / SEM POSIÇÃO";
     if (properties.status === "falha_sinal") return "SEM SINAL";
@@ -241,12 +260,38 @@
       </div>`;
 
     vesselStates.forEach((vessel) => updateMarker(vessel, vessel.feature.properties.rumo_graus));
+    const selectedVessel = vesselStates.find((vessel) => vessel.feature.properties.id === id);
+    if (selectedVessel) loadBackendRoute(selectedVessel);
     if (state.map) {
       state.map.panTo({ lat: latitude, lng: longitude });
       state.map.setZoom(10);
     }
 
     if (window.matchMedia("(max-width: 767px)").matches) refs.sidebar.classList.add("open");
+  }
+
+  async function loadBackendRoute(vessel) {
+    if (!state.map || !window.fetch) return;
+    try {
+      const response = await fetch(`/api/routes/${encodeURIComponent(vessel.feature.properties.id)}`, { cache: "no-store" });
+      if (!response.ok) return;
+      const data = await response.json();
+      if (!Array.isArray(data.route) || data.route.length < 2) return;
+      if (!vessel.trail) {
+        vessel.trail = new google.maps.Polyline({
+          path: data.route.map((point) => ({ lat: point.lat, lng: point.lng })),
+          geodesic: true,
+          strokeColor: "#34c8d9",
+          strokeOpacity: 0.62,
+          strokeWeight: 2,
+          map: state.map
+        });
+      } else {
+        vessel.trail.setPath(data.route.map((point) => ({ lat: point.lat, lng: point.lng })));
+      }
+    } catch (error) {
+      console.warn("Não foi possível carregar rota:", error);
+    }
   }
 
   function simulationLoop(timestamp) {
@@ -276,11 +321,18 @@
       cells[4].textContent = `${Math.round(properties.rumo_graus)}°`;
       cells[5].textContent = transmissionLabel(properties);
       const detailGrid = refs.detail.querySelector(".detail-grid");
-      if (properties.name && !detailGrid.querySelector('[data-field="vessel-name"]')) {
+      if (!detailGrid.querySelector('[data-field="vessel-name"]')) {
         const extra = document.createElement("div");
         extra.className = "detail-cell";
         extra.dataset.field = "vessel-name";
-        extra.innerHTML = `<span>Nome AIS / IMO</span><strong>${properties.nome || "-"}${properties.imo ? ` / ${properties.imo}` : ""}</strong>`;
+        extra.innerHTML = `<span>Nome AIS / IMO</span><strong>${cleanAisText(properties.nome || "-")}${properties.imo ? ` / ${properties.imo}` : ""}</strong>`;
+        detailGrid.appendChild(extra);
+      }
+      if (!detailGrid.querySelector('[data-field="vessel-type"]')) {
+        const extra = document.createElement("div");
+        extra.className = "detail-cell";
+        extra.dataset.field = "vessel-type";
+        extra.innerHTML = `<span>Tipo de embarcação</span><strong>${properties.tipo || aisShipType(properties.tipoAIS) || "Não informado"}</strong>`;
         detailGrid.appendChild(extra);
       }
     }
@@ -410,10 +462,11 @@
     let feature = vessels.find((item) => item.properties.id === boatId);
     if (packet.staticOnly && feature) {
       Object.assign(feature.properties, {
-        nome: packet.name || feature.properties.nome,
-        callSign: packet.callSign || null,
+        nome: cleanAisText(packet.name) || feature.properties.nome,
+        callSign: cleanAisText(packet.callSign) || null,
         imo: packet.imo || null,
-        tipoAIS: packet.shipType || null,
+        tipoAIS: aisShipType(packet.shipType),
+        tipo: aisShipType(packet.shipType),
         destino: packet.destination || null,
         draught: packet.draught || null,
         origem_telemetria: packet.source || "ais",
@@ -431,12 +484,12 @@
         geometry: { type: "Point", coordinates: [null, null] },
         properties: {
           id: boatId,
-          nome: packet.name || packet.vesselName || `MMSI ${boatId}`,
-          tipo: packet.shipType || "Tipo não informado",
+          nome: cleanAisText(packet.name || packet.vesselName) || `MMSI ${boatId}`,
+          tipo: aisShipType(packet.shipType),
           velocidade_nos: 0,
           rumo_graus: 0,
           status: "sem_posicao",
-          proxima_parada: packet.destination || "Não informada",
+          proxima_parada: cleanAisText(packet.destination) || "Não informada",
           bateria_rastreador: 0,
           origem_telemetria: "ais",
           callSign: packet.callSign || null,
@@ -463,8 +516,8 @@
         geometry: { type: "Point", coordinates: [longitude, latitude] },
         properties: {
           id: boatId,
-          nome: packet.name || packet.vesselName || `Embarcação ${boatId}`,
-          tipo: String(packet.source || "radio").toUpperCase(),
+          nome: cleanAisText(packet.name || packet.vesselName) || `MMSI ${boatId}`,
+          tipo: aisShipType(packet.shipType),
           velocidade_nos: 0,
           rumo_graus: 0,
           status: "em_navegacao",

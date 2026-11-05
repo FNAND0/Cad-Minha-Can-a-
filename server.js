@@ -25,12 +25,17 @@ const AREA = Object.freeze({
 const clients = new Set();
 const latestPositions = new Map();
 const latestStaticData = new Map();
+const routeHistory = new Map();
 const aliases = parseAliases(process.env.BOAT_ALIASES || "");
 const aisMetrics = {
   connected: false, reconnects: 0, messages: 0, positionReports: 0,
   staticReports: 0, ignoredMessages: 0, lastMessageAt: null,
   byMmsi: new Map(), byMessageType: new Map()
 };
+
+function cleanAisText(value) {
+  return typeof value === "string" ? value.replace(/\0/g, "").replace(/\s+/g, " ").trim() : value;
+}
 
 function parseAliases(raw) {
   const result = new Map();
@@ -72,9 +77,19 @@ function broadcast(rawPacket) {
   };
 
   if (normalized.staticOnly) {
+    normalized.name = cleanAisText(normalized.name);
+    normalized.callSign = cleanAisText(normalized.callSign);
+    normalized.destination = cleanAisText(normalized.destination);
     latestStaticData.set(normalized.boatId, normalized);
   } else {
     latestPositions.set(normalized.boatId, normalized);
+    const history = routeHistory.get(normalized.boatId) || [];
+    const previous = history[history.length - 1];
+    if (!previous || previous.lat !== normalized.lat || previous.lng !== normalized.lng) {
+      history.push({ lat: normalized.lat, lng: normalized.lng, timestamp: normalized.timestamp, speed: normalized.speed, heading: normalized.heading });
+      if (history.length > 500) history.shift();
+      routeHistory.set(normalized.boatId, history);
+    }
   }
 
   const payload = JSON.stringify(normalized);
@@ -122,7 +137,9 @@ const server = http.createServer(async (request, response) => {
     }
     const vessels = new Map(latestPositions);
     latestStaticData.forEach((staticData, boatId) => {
-      vessels.set(boatId, { ...(vessels.get(boatId) || {}), ...staticData, boatId });
+      const merged = { ...(vessels.get(boatId) || {}), ...staticData, boatId };
+      delete merged.staticOnly;
+      vessels.set(boatId, merged);
     });
     const matches = [...vessels.values()].filter((vessel) => {
       const searchable = [vessel.name, vessel.callSign, vessel.mmsi, vessel.boatId, vessel.destination]
@@ -134,10 +151,19 @@ const server = http.createServer(async (request, response) => {
     return;
   }
 
+  if (requestUrl.pathname.startsWith("/api/routes/")) {
+    const boatId = decodeURIComponent(requestUrl.pathname.slice("/api/routes/".length));
+    response.writeHead(200, { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify({ ok: true, boatId, route: routeHistory.get(boatId) || [] }));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/vessels") {
     const vessels = new Map(latestPositions);
     latestStaticData.forEach((staticData, boatId) => {
-      vessels.set(boatId, { ...(vessels.get(boatId) || {}), ...staticData, boatId });
+      const merged = { ...(vessels.get(boatId) || {}), ...staticData, boatId };
+      delete merged.staticOnly;
+      vessels.set(boatId, merged);
     });
     response.writeHead(200, { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" });
     response.end(JSON.stringify({ ok: true, timestamp: Math.floor(Date.now() / 1000), vessels: [...vessels.values()] }));
@@ -193,7 +219,9 @@ wsServer.on("connection", (socket) => {
   socket.send(JSON.stringify({ type: "connected", timestamp: Math.floor(Date.now() / 1000) }));
   latestPositions.forEach((packet, boatId) => {
     const staticData = latestStaticData.get(boatId);
-    socket.send(JSON.stringify({ ...packet, ...(staticData || {}), boatId }));
+    const snapshot = { ...packet, ...(staticData || {}), boatId };
+    delete snapshot.staticOnly;
+    socket.send(JSON.stringify(snapshot));
   });
   latestStaticData.forEach((staticData, boatId) => {
     if (!latestPositions.has(boatId)) socket.send(JSON.stringify(staticData));
@@ -346,11 +374,11 @@ function extractAisStreamPacket(message) {
       source: "ais",
       messageType: type,
       staticOnly: true,
-      name: staticData.Name ?? staticData.ShipName ?? null,
-      callSign: staticData.CallSign ?? null,
+      name: cleanAisText(staticData.Name ?? staticData.ShipName ?? null),
+      callSign: cleanAisText(staticData.CallSign ?? null),
       imo: staticData.ImoNumber ?? staticData.IMO ?? null,
       shipType: staticData.Type ?? staticData.ShipType ?? null,
-      destination: staticData.Destination ?? null,
+      destination: cleanAisText(staticData.Destination ?? null),
       eta: staticData.ETA ?? staticData.EstimatedTimeOfArrival ?? null,
       draught: staticData.MaximumStaticDraught ?? staticData.Draught ?? null,
       quality: `AISStream${metadata.Source ? ` / ${metadata.Source}` : ""}`,

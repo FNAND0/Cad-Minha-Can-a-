@@ -1,4 +1,6 @@
-# Rio Radar
+# Cadê Minha Canôa?
+
+Painel real-time de rastreamento fluvial com dados AIS reais.
 
 Painel real-time de telemetria fluvial para a Amazônia. O sistema combina Google Maps, AISStream, APRS-IS, AISHub, ingestão HTTP e WebSocket em um único bridge Node.js.
 
