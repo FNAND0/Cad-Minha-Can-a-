@@ -27,6 +27,7 @@ O coletor suporta assinaturas geográficas, filtros por MMSI (`AISSTREAM_FILTER_
 
 - `/health`: estado operacional JSON do HTTP, clientes WebSocket e AISStream.
 - `/api/status`: métricas detalhadas sem cache, incluindo tipos de mensagem, MMSIs vistos, mensagens ignoradas e reconexões.
+- `/api/vessels`: snapshot JSON da última posição e dos últimos dados estáticos recebidos por MMSI, sem simulação.
 - `POST /ingest/ais`: ingestão de posição ou dados estáticos AIS pelo backend.
 - `POST /ingest/radio`: ingestão de fontes APRS, LoRa, checkpoints ou rádio em geral.
 - `ws://host/ws` ou `wss://host/ws`: entrega normalizada para o painel em tempo real.

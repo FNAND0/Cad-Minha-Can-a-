@@ -23,6 +23,8 @@ const AREA = Object.freeze({
 });
 
 const clients = new Set();
+const latestPositions = new Map();
+const latestStaticData = new Map();
 const aliases = parseAliases(process.env.BOAT_ALIASES || "");
 const aisMetrics = {
   connected: false, reconnects: 0, messages: 0, positionReports: 0,
@@ -69,6 +71,12 @@ function broadcast(rawPacket) {
     timestamp: packet.timestamp
   };
 
+  if (normalized.staticOnly) {
+    latestStaticData.set(normalized.boatId, normalized);
+  } else {
+    latestPositions.set(normalized.boatId, normalized);
+  }
+
   const payload = JSON.stringify(normalized);
   clients.forEach((client) => {
     if (client.readyState === WebSocket.OPEN) client.send(payload);
@@ -100,6 +108,16 @@ const server = http.createServer(async (request, response) => {
       clients: clients.size,
       aisStream: { ...aisMetrics, byMmsi: aisMetrics.byMmsi.size, byMessageType: Object.fromEntries(aisMetrics.byMessageType) }
     }));
+    return;
+  }
+
+  if (request.url === "/api/vessels") {
+    const vessels = new Map(latestPositions);
+    latestStaticData.forEach((staticData, boatId) => {
+      vessels.set(boatId, { ...(vessels.get(boatId) || {}), ...staticData, boatId });
+    });
+    response.writeHead(200, { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify({ ok: true, timestamp: Math.floor(Date.now() / 1000), vessels: [...vessels.values()] }));
     return;
   }
 
@@ -150,6 +168,13 @@ const wsServer = new WebSocket.Server({ server, path: "/ws" });
 wsServer.on("connection", (socket) => {
   clients.add(socket);
   socket.send(JSON.stringify({ type: "connected", timestamp: Math.floor(Date.now() / 1000) }));
+  latestPositions.forEach((packet, boatId) => {
+    const staticData = latestStaticData.get(boatId);
+    socket.send(JSON.stringify({ ...packet, ...(staticData || {}), boatId }));
+  });
+  latestStaticData.forEach((staticData, boatId) => {
+    if (!latestPositions.has(boatId)) socket.send(JSON.stringify(staticData));
+  });
   socket.on("close", () => clients.delete(socket));
   socket.on("error", () => clients.delete(socket));
 });

@@ -242,6 +242,7 @@
   }
 
   function transmissionLabel(properties) {
+    if (properties.status === "sem_posicao") return "AIS / SEM POSIÇÃO";
     if (properties.status === "falha_sinal") return "SEM SINAL";
     if (properties.origem_telemetria && properties.origem_telemetria !== "simulacao") {
       return `${String(properties.origem_telemetria).toUpperCase()} / ${properties.qualidade_sinal || "ATIVO"}`;
@@ -452,6 +453,32 @@
       return;
     }
 
+    if (packet.staticOnly && !feature) {
+      feature = {
+        type: "Feature",
+        geometry: { type: "Point", coordinates: [null, null] },
+        properties: {
+          id: boatId,
+          nome: packet.name || packet.vesselName || `MMSI ${boatId}`,
+          tipo: packet.shipType || "Tipo não informado",
+          velocidade_nos: 0,
+          rumo_graus: 0,
+          status: "sem_posicao",
+          proxima_parada: packet.destination || "Não informada",
+          bateria_rastreador: 0,
+          origem_telemetria: "ais",
+          callSign: packet.callSign || null,
+          imo: packet.imo || null,
+          destino: packet.destination || null,
+          draught: packet.draught || null
+        }
+      };
+      vessels.push(feature);
+      renderList();
+      if (state.selectedId === boatId) updateDetailCoordinates(boatId);
+      return;
+    }
+
     const latitude = Number(packet.lat);
     const longitude = Number(packet.lng);
     if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
@@ -488,6 +515,29 @@
       renderList();
 
       if (state.map) {
+        const marker = new google.maps.Marker({
+          position: { lat: latitude, lng: longitude },
+          map: state.map,
+          title: feature.properties.nome,
+          icon: nauticalIcon("em_navegacao", false, 0)
+        });
+        marker.addListener("click", () => selectVessel(boatId));
+        markerCache.set(boatId, marker);
+      }
+    } else if (!vessel && feature) {
+      vessel = {
+        feature,
+        progress: nearestProgress([longitude, latitude]),
+        phase: vesselStates.length * 1.37,
+        source: "ais",
+        lastRealPacketAt: 0,
+        realStatus: false,
+        originalStatus: "em_navegacao"
+      };
+      vesselStates.push(vessel);
+      feature.geometry.coordinates = [longitude, latitude];
+      feature.properties.status = "em_navegacao";
+      if (state.map && !markerCache.has(boatId)) {
         const marker = new google.maps.Marker({
           position: { lat: latitude, lng: longitude },
           map: state.map,
