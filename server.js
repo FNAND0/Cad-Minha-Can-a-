@@ -374,7 +374,7 @@ function connectAisStream() {
         BoundingBoxes: parseBoundingBoxes(),
         FilterMessageTypes: (process.env.AISSTREAM_FILTER_TYPES
           ? process.env.AISSTREAM_FILTER_TYPES.split(/[;,\s]+/).map((value) => value.trim()).filter(Boolean)
-          : ["PositionReport"])
+          : ["PositionReport", "ShipStaticData"])
       };
       if (filters) subscription.FiltersShipMMSI = filters;
       socket.send(JSON.stringify(subscription));
