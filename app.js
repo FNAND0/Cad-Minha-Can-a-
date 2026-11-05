@@ -299,6 +299,14 @@
       cells[3].textContent = toDMS(longitude, "lon");
       cells[4].textContent = `${Math.round(properties.rumo_graus)}°`;
       cells[5].textContent = transmissionLabel(properties);
+      const detailGrid = refs.detail.querySelector(".detail-grid");
+      if (properties.name && !detailGrid.querySelector('[data-field="vessel-name"]')) {
+        const extra = document.createElement("div");
+        extra.className = "detail-cell";
+        extra.dataset.field = "vessel-name";
+        extra.innerHTML = `<span>Nome AIS / IMO</span><strong>${properties.nome || "-"}${properties.imo ? ` / ${properties.imo}` : ""}</strong>`;
+        detailGrid.appendChild(extra);
+      }
     }
   }
 
@@ -356,6 +364,23 @@
     const boatId = String(packet.boatId || packet.id || "").trim();
     if (!boatId) return;
     let feature = vessels.find((item) => item.properties.id === boatId);
+    if (packet.staticOnly && feature) {
+      Object.assign(feature.properties, {
+        nome: packet.name || feature.properties.nome,
+        callSign: packet.callSign || null,
+        imo: packet.imo || null,
+        tipoAIS: packet.shipType || null,
+        destino: packet.destination || null,
+        draught: packet.draught || null,
+        origem_telemetria: packet.source || "ais",
+        timestamp_telemetria: normalizePacketTimestamp(Number(packet.timestamp)),
+        qualidade_sinal: packet.quality || "AIS"
+      });
+      if (state.selectedId === boatId) updateDetailCoordinates(boatId);
+      renderList();
+      return;
+    }
+
     const latitude = Number(packet.lat);
     const longitude = Number(packet.lng);
     if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
@@ -418,6 +443,10 @@
     feature.properties.origem_telemetria = source;
     feature.properties.timestamp_telemetria = packetTimestamp;
     feature.properties.qualidade_sinal = packet.quality || packet.rssi || "recebido";
+    feature.properties.messageType = packet.messageType || null;
+    feature.properties.navigationalStatus = packet.navigationalStatus || null;
+    feature.properties.rotationRate = packet.rotationRate ?? null;
+    feature.properties.timestamp_telemetria = packetTimestamp;
 
     vessel.realStatus = true;
     vessel.source = source;
