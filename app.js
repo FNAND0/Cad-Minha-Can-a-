@@ -5,9 +5,11 @@
   const route = routeFeature.geometry.coordinates;
   const vessels = RioTelemetryData.vessels.features;
   const markerCache = new Map();
+  const trailCache = new Map();
   const state = {
     map: null, selectedId: null, lastUpdate: 0, frame: 0, running: true,
-    radioSocket: null, reconnectTimer: 0, reconnectDelayMs: RioRadarConfig.radioReconnectDelayMs
+    radioSocket: null, reconnectTimer: 0, reconnectDelayMs: RioRadarConfig.radioReconnectDelayMs,
+    pendingPositions: new Map()
   };
 
   const refs = {
@@ -276,6 +278,7 @@
 
   function simulationLoop(timestamp) {
     if (!state.running) return;
+    applyPendingPositionUpdates();
     const elapsedSeconds = state.lastUpdate ? Math.min(0.5, (timestamp - state.lastUpdate) / 1000) : 0.25;
     state.lastUpdate = timestamp;
 
@@ -360,6 +363,74 @@
     return numeric > 100000000000 ? numeric : numeric * 1000;
   }
 
+  function appendPositionTrail(vessel, latitude, longitude) {
+    const boatId = vessel.feature.properties.id;
+    let history = trailCache.get(boatId);
+    if (!history) {
+      history = [];
+      trailCache.set(boatId, history);
+    }
+    const last = history[history.length - 1];
+    if (!last || Math.abs(last.lat - latitude) > 0.00001 || Math.abs(last.lng - longitude) > 0.00001) {
+      history.push({ lat: latitude, lng: longitude });
+      if (history.length > 60) history.shift();
+    }
+
+    let trail = vessel.trail;
+    if (!trail && state.map) {
+      trail = new google.maps.Polyline({
+        path: history.map((point) => ({ lat: point.lat, lng: point.lng })),
+        geodesic: true,
+        strokeColor: "#34c8d9",
+        strokeOpacity: 0.62,
+        strokeWeight: 2,
+        map: state.map
+      });
+      vessel.trail = trail;
+    } else if (trail) {
+      trail.setPath(history.map((point) => ({ lat: point.lat, lng: point.lng })));
+    }
+  }
+
+  function queuePositionUpdate(vessel, latitude, longitude, heading, packetTimestamp) {
+    const marker = markerCache.get(vessel.feature.properties.id);
+    const markerPosition = marker?.getPosition();
+    const from = markerPosition
+      ? { lat: markerPosition.lat(), lng: markerPosition.lng() }
+      : { lat: vessel.feature.geometry.coordinates[1], lng: vessel.feature.geometry.coordinates[0] };
+
+    state.pendingPositions.set(vessel.feature.properties.id, {
+      vessel,
+      from,
+      to: { lat: latitude, lng: longitude },
+      heading,
+      packetTimestamp,
+      startedAt: performance.now(),
+      duration: 900
+    });
+    appendPositionTrail(vessel, latitude, longitude);
+  }
+
+  function applyPendingPositionUpdates() {
+    const now = performance.now();
+    state.pendingPositions.forEach((update, boatId) => {
+      const progress = Math.min(1, (now - update.startedAt) / update.duration);
+      const eased = 1 - ((1 - progress) ** 3);
+      const latitude = update.from.lat + (update.to.lat - update.from.lat) * eased;
+      const longitude = update.from.lng + (update.to.lng - update.from.lng) * eased;
+      const marker = markerCache.get(boatId);
+
+      if (marker) marker.setPosition(new google.maps.LatLng(latitude, longitude));
+      update.vessel.feature.geometry.coordinates = [longitude, latitude];
+
+      if (progress >= 1) {
+        update.vessel.feature.geometry.coordinates = [update.to.lng, update.to.lat];
+        state.pendingPositions.delete(boatId);
+        updateMarker(update.vessel, update.heading);
+      }
+    });
+  }
+
   function processRadioPacket(packet) {
     const boatId = String(packet.boatId || packet.id || "").trim();
     if (!boatId) return;
@@ -431,6 +502,8 @@
     const speed = Number(packet.speed);
     const heading = Number(packet.heading);
     const packetTimestamp = normalizePacketTimestamp(Number(packet.timestamp));
+    if (vessel.lastPacketTimestamp && packetTimestamp < vessel.lastPacketTimestamp) return;
+
     const allowedSources = new Set(["aprs", "lora", "ais", "checkpoint", "radio", "satellite"]);
     const source = allowedSources.has(String(packet.source || "").toLowerCase())
       ? String(packet.source).toLowerCase()
@@ -451,9 +524,10 @@
     vessel.realStatus = true;
     vessel.source = source;
     vessel.lastRealPacketAt = performance.now();
-    vessel.progress = nearestProgress(feature.geometry.coordinates);
+    vessel.progress = nearestProgress([longitude, latitude]);
+    vessel.lastPacketTimestamp = packetTimestamp;
 
-    if (markerCache.has(boatId)) updateMarker(vessel, feature.properties.rumo_graus);
+    queuePositionUpdate(vessel, latitude, longitude, feature.properties.rumo_graus, packetTimestamp);
     if (state.selectedId === boatId) updateDetailCoordinates(boatId);
   }
 

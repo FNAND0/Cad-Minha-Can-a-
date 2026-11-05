@@ -33,6 +33,8 @@ O coletor suporta assinaturas geográficas, filtros por MMSI (`AISSTREAM_FILTER_
 
 Mensagens estáticas podem atualizar nome, indicativo, IMO, tipo, destino, calado e última origem. Mensagens sem latitude não sobrescrevem coordenadas existentes. Por padrão, a assinatura usa `PositionReport`; tipos adicionais devem ser definidos apenas se validados pela sua conta AISStream.
 
+Cada pacote válido recebido via `/ws` é aplicado imediatamente à embarcação correspondente. Posições antigas são descartadas por timestamp, novos destinos são animados por `requestAnimationFrame` sem recriar marcadores e a trilha mantém apenas os últimos 60 pontos por embarcação para limitar memória.
+
 ```env
 AISSTREAM_API_KEY=SUA_CHAVE_AISSTREAM
 AISSTREAM_BOUNDING_BOXES=[[[-4.5,-62.5],[-2.5,-58.5]]]
