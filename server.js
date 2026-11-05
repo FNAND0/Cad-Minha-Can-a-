@@ -18,8 +18,8 @@ const MIME_TYPES = {
 
 // Simple radio-region filter prevents unrelated traffic from changing Amazon route assets.
 const AREA = Object.freeze({
-  minLat: Number(process.env.AREA_MIN_LAT || -6.0), maxLat: Number(process.env.AREA_MAX_LAT || -1.0),
-  minLng: Number(process.env.AREA_MIN_LNG || -66.5), maxLng: Number(process.env.AREA_MAX_LNG || -59.0)
+  minLat: Number(process.env.AREA_MIN_LAT || -18.0), maxLat: Number(process.env.AREA_MAX_LAT || 5.3),
+  minLng: Number(process.env.AREA_MIN_LNG || -74.0), maxLng: Number(process.env.AREA_MAX_LNG || -44.0)
 });
 
 const clients = new Set();
@@ -101,7 +101,9 @@ function readJson(request) {
 }
 
 const server = http.createServer(async (request, response) => {
-  if (request.url === "/health") {
+  const requestUrl = new URL(request.url, "http://localhost");
+
+  if (requestUrl.pathname === "/health") {
     response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
     response.end(JSON.stringify({
       ok: true,
@@ -111,7 +113,28 @@ const server = http.createServer(async (request, response) => {
     return;
   }
 
-  if (request.url === "/api/vessels") {
+  if (requestUrl.pathname === "/api/search") {
+    const query = String(requestUrl.searchParams.get("q") || "").trim().toLowerCase();
+    if (!query) {
+      response.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({ error: "Missing q parameter" }));
+      return;
+    }
+    const vessels = new Map(latestPositions);
+    latestStaticData.forEach((staticData, boatId) => {
+      vessels.set(boatId, { ...(vessels.get(boatId) || {}), ...staticData, boatId });
+    });
+    const matches = [...vessels.values()].filter((vessel) => {
+      const searchable = [vessel.name, vessel.callSign, vessel.mmsi, vessel.boatId, vessel.destination]
+        .filter(Boolean).join(" ").toLowerCase();
+      return searchable.includes(query.replace(/\s+/g, " "));
+    });
+    response.writeHead(200, { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify({ ok: true, query, matches }));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/vessels") {
     const vessels = new Map(latestPositions);
     latestStaticData.forEach((staticData, boatId) => {
       vessels.set(boatId, { ...(vessels.get(boatId) || {}), ...staticData, boatId });
@@ -121,7 +144,7 @@ const server = http.createServer(async (request, response) => {
     return;
   }
 
-  if (request.url === "/api/status") {
+  if (requestUrl.pathname === "/api/status") {
     response.writeHead(200, { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" });
     response.end(JSON.stringify({
       ok: true,
@@ -345,7 +368,7 @@ function parseBoundingBoxes() {
     catch (error) { console.error("AISSTREAM_BOUNDING_BOXES inválido:", error.message); }
   }
   // Manaus/reach default. The first pair is south-west and north-east.
-  return [[[-4.5, -62.5], [-2.5, -58.5]]];
+  return [[[5.3, -74.0], [-18.0, -44.0]]];
 }
 
 function parseAisMmsiFilter() {

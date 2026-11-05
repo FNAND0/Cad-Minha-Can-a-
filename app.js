@@ -119,8 +119,8 @@
     ];
 
     state.map = new google.maps.Map(document.getElementById("map"), {
-      center: { lat: -3.7, lng: -62.1 },
-      zoom: 7,
+      center: { lat: -6.35, lng: -59.0 },
+      zoom: 5,
       minZoom: 6,
       maxZoom: 12,
       disableDefaultUI: true,
@@ -151,8 +151,10 @@
       markerCache.set(properties.id, marker);
     });
 
-    const bounds = new google.maps.LatLngBounds();
-    latLngs.forEach((point) => bounds.extend(point));
+    const bounds = new google.maps.LatLngBounds(
+      new google.maps.LatLng(-18.0, -74.0),
+      new google.maps.LatLng(5.3, -44.0)
+    );
     state.map.fitBounds(bounds, { top: 44, right: 42, bottom: 42, left: 42 });
     refs.loader.style.display = "none";
   }
@@ -160,43 +162,13 @@
   function updateVessel(vessel, elapsedSeconds, timestamp = performance.now()) {
     const properties = vessel.feature.properties;
 
-    // Telemetry real suspende only the vessel that has fresh packets.
-    if (vessel.realStatus) {
-      if (timestamp - vessel.lastRealPacketAt >= RioRadarConfig.radioSignalTimeoutMs) {
-        vessel.realStatus = false;
-        vessel.source = "simulacao";
-        properties.status = vessel.originalStatus;
-        properties.origem_telemetria = "simulacao";
-      } else {
-        updateMarker(vessel, properties.rumo_graus);
-        return;
-      }
+    if (vessel.realStatus && timestamp - vessel.lastRealPacketAt >= RioRadarConfig.radioSignalTimeoutMs) {
+      vessel.realStatus = false;
+      properties.status = "falha_sinal";
+      properties.origem_telemetria = "ais";
     }
 
-    if (properties.status === "atracado" || properties.status === "falha_sinal") {
-      updateMarker(vessel, properties.rumo_graus);
-      return;
-    }
-
-    // The simulation clock is accelerated, while elapsed-time integration keeps motion stable.
-    const baseSpeedKmH = properties.velocidade_nos * 1.852;
-    const currentTimeNoise = gaussianNoise() * 0.45 + gaussianNoise() * 0.1;
-    properties.velocidade_nos = Math.max(0, properties.velocidade_nos + currentTimeNoise * 0.025);
-
-    vessel.progress += (baseSpeedKmH / routeLengthKm / 3600) * elapsedSeconds * 180;
-    if (vessel.progress > 1.02) vessel.progress -= 1.02;
-
-    const interpolation = interpolateProgress(vessel.progress);
-    const t = Math.max(0, Math.min(1, ((vessel.progress * routeLengthKm - interpolation.segment.start) / interpolation.segment.length) || 0));
-    const heading = bearingDegrees(interpolation.segment.from, interpolation.segment.to);
-    properties.rumo_graus = Math.round((heading + gaussianNoise() * 1.2 + 360) % 360);
-
-    // Subtle coordinate noise simulates non-differential GPS while preserving route shape.
-    const gpsNoise = 0.000025 * gaussianNoise();
-    const crossNoise = 0.000025 * gaussianNoise();
-    const longitude = interpolation.coordinates[0] + gpsNoise;
-    const latitude = interpolation.coordinates[1] + crossNoise;
-    vessel.feature.geometry.coordinates = [longitude, latitude];
+    // Embarcações reais permanecem imóveis até receber outra posição válida.
     updateMarker(vessel, properties.rumo_graus);
   }
 
@@ -247,7 +219,7 @@
     if (properties.origem_telemetria && properties.origem_telemetria !== "simulacao") {
       return `${String(properties.origem_telemetria).toUpperCase()} / ${properties.qualidade_sinal || "ATIVO"}`;
     }
-    return `SIMULAÇÃO / BATERIA ${properties.bateria_rastreador}%`;
+    return "SEM POSIÇÃO REAL";
   }
 
   function selectVessel(id) {
