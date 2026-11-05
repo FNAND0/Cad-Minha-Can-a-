@@ -24,6 +24,11 @@ const AREA = Object.freeze({
 
 const clients = new Set();
 const aliases = parseAliases(process.env.BOAT_ALIASES || "");
+const aisMetrics = {
+  connected: false, reconnects: 0, messages: 0, positionReports: 0,
+  staticReports: 0, ignoredMessages: 0, lastMessageAt: null,
+  byMmsi: new Map(), byMessageType: new Map()
+};
 
 function parseAliases(raw) {
   const result = new Map();
@@ -49,14 +54,14 @@ function validPacket(packet) {
 }
 
 function broadcast(rawPacket) {
-  const packet = { ...rawPacket, timestamp: Math.floor(Date.now() / 1000) };
+  const packet = { ...rawPacket, timestamp: rawPacket.timestamp ? Number(rawPacket.timestamp) : Math.floor(Date.now() / 1000) };
   const boatId = resolveBoatId(packet);
-  if (!boatId || !validPacket(packet)) return;
+  if (!boatId) return;
+  if (!packet.staticOnly && !validPacket(packet)) return;
 
   const normalized = {
+    ...packet,
     boatId,
-    lat: Number(packet.lat),
-    lng: Number(packet.lng),
     speed: Number.isFinite(Number(packet.speed)) ? Number(packet.speed) : 0,
     heading: Number.isFinite(Number(packet.heading)) ? Number(packet.heading) : 0,
     source: packet.source || "radio",
@@ -90,7 +95,22 @@ function readJson(request) {
 const server = http.createServer(async (request, response) => {
   if (request.url === "/health") {
     response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-    response.end(JSON.stringify({ ok: true, clients: clients.size }));
+    response.end(JSON.stringify({
+      ok: true,
+      clients: clients.size,
+      aisStream: { ...aisMetrics, byMmsi: aisMetrics.byMmsi.size, byMessageType: Object.fromEntries(aisMetrics.byMessageType) }
+    }));
+    return;
+  }
+
+  if (request.url === "/api/status") {
+    response.writeHead(200, { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify({
+      ok: true,
+      timestamp: Math.floor(Date.now() / 1000),
+      connectedClients: clients.size,
+      aisStream: { ...aisMetrics, byMmsi: aisMetrics.byMmsi.size, byMessageType: Object.fromEntries(aisMetrics.byMessageType) }
+    }));
     return;
   }
 
@@ -138,6 +158,27 @@ function ingestAis(packet) {
   const lat = packet.lat ?? packet.latitude ?? packet.LAT ?? packet.LATITUDE;
   const lng = packet.lng ?? packet.lon ?? packet.longitude ?? packet.LON ?? packet.LONGITUDE;
   const mmsi = packet.mmsi ?? packet.MMSI ?? packet.id;
+
+  if (!Number.isFinite(Number(lat)) || !Number.isFinite(Number(lng))) {
+    if (packet.staticOnly || packet.name || packet.callSign || packet.imo || packet.destination || packet.shipType) {
+      broadcast({
+        id: mmsi ? String(mmsi) : packet.boatId,
+        boatId: packet.boatId,
+        mmsi: mmsi ? String(mmsi) : undefined,
+        staticOnly: true,
+        name: packet.name ?? packet.shipName ?? packet.Name ?? null,
+        callSign: packet.callSign ?? packet.CallSign ?? null,
+        imo: packet.imo ?? packet.imoNumber ?? packet.ImoNumber ?? null,
+        shipType: packet.shipType ?? packet.type ?? packet.Type ?? null,
+        destination: packet.destination ?? packet.Destination ?? null,
+        draught: packet.draught ?? packet.Draught ?? null,
+        source: packet.source || "ais",
+        quality: packet.status ?? packet.rssi ?? "AIS static data"
+      });
+    }
+    return;
+  }
+
   broadcast({
     id: mmsi ? String(mmsi) : packet.boatId,
     boatId: packet.boatId,
@@ -206,27 +247,71 @@ function connectAprsIs() {
 
 function extractAisStreamPacket(message) {
   const metadata = message.MetaData || {};
-  const report = message.Message?.PositionReport
-    || message.Message?.StandardClassBPositionReport
-    || message.Message?.ExtendedClassBPositionReport
-    || message.Message?.LongRangeAISBroadcastMessage;
-  if (!report) return null;
+  const mmsi = metadata.MMSI ? String(metadata.MMSI) : null;
+  const type = String(message.MessageType || "Unknown");
+  aisMetrics.messages++;
+  aisMetrics.lastMessageAt = new Date().toISOString();
+  aisMetrics.byMessageType.set(type, (aisMetrics.byMessageType.get(type) || 0) + 1);
+  if (mmsi) aisMetrics.byMmsi.set(mmsi, (aisMetrics.byMmsi.get(mmsi) || 0) + 1);
 
-  const mmsi = metadata.MMSI;
-  const lat = report.Latitude ?? report.lat;
-  const lng = report.Longitude ?? report.lon;
-  const speed = report.Sog ?? report.SOG ?? report.SpeedOverGround;
-  const heading = report.Cog ?? report.COG ?? report.CourseOverGround ?? report.TrueHeading;
-  if (!mmsi || !Number.isFinite(Number(lat)) || !Number.isFinite(Number(lng))) return null;
+  const body = message.Message || {};
+  const report = body.PositionReport
+    || body.StandardClassBPositionReport
+    || body.ExtendedClassBPositionReport
+    || body.LongRangeAISBroadcastMessage
+    || null;
 
-  return {
-    boatId: String(mmsi), mmsi: String(mmsi),
-    lat: Number(lat), lng: Number(lng),
-    speed: Number.isFinite(Number(speed)) ? Number(speed) : 0,
-    heading: Number.isFinite(Number(heading)) ? Number(heading) : 0,
-    source: "ais", quality: `AISStream${metadata.Source ? ` / ${metadata.Source}` : ""}`,
-    timestamp: metadata.time_stamp || Math.floor(Date.now() / 1000)
-  };
+  if (report) {
+    aisMetrics.positionReports++;
+    const lat = report.Latitude ?? report.lat;
+    const lng = report.Longitude ?? report.lon;
+    const speed = report.Sog ?? report.SOG ?? report.SpeedOverGround;
+    const heading = report.Cog ?? report.COG ?? report.CourseOverGround ?? report.TrueHeading;
+    if (!mmsi || !Number.isFinite(Number(lat)) || !Number.isFinite(Number(lng))) {
+      aisMetrics.ignoredMessages++;
+      return null;
+    }
+    return {
+      boatId: String(mmsi), mmsi,
+      lat: Number(lat), lng: Number(lng),
+      speed: Number.isFinite(Number(speed)) ? Number(speed) : 0,
+      heading: Number.isFinite(Number(heading)) ? Number(heading) : 0,
+      rotationRate: Number.isFinite(Number(report.RateOfTurn)) ? Number(report.RateOfTurn) : null,
+      navigationalStatus: report.NavigationalStatus ?? null,
+      maneuverIndicator: report.SpecialManeuverIndicator ?? null,
+      messageType: type,
+      source: "ais",
+      quality: `AISStream${metadata.Source ? ` / ${metadata.Source}` : ""}`,
+      timestamp: metadata.time_stamp || Math.floor(Date.now() / 1000)
+    };
+  }
+
+  const staticData = body.ShipStaticData || body.StaticVoyageRelatedData || body.ShipAndVoyageData || null;
+  if (staticData) {
+    aisMetrics.staticReports++;
+    if (!mmsi) {
+      aisMetrics.ignoredMessages++;
+      return null;
+    }
+    return {
+      boatId: String(mmsi), mmsi,
+      source: "ais",
+      messageType: type,
+      staticOnly: true,
+      name: staticData.Name ?? staticData.ShipName ?? null,
+      callSign: staticData.CallSign ?? null,
+      imo: staticData.ImoNumber ?? staticData.IMO ?? null,
+      shipType: staticData.Type ?? staticData.ShipType ?? null,
+      destination: staticData.Destination ?? null,
+      eta: staticData.ETA ?? staticData.EstimatedTimeOfArrival ?? null,
+      draught: staticData.MaximumStaticDraught ?? staticData.Draught ?? null,
+      quality: `AISStream${metadata.Source ? ` / ${metadata.Source}` : ""}`,
+      timestamp: metadata.time_stamp || Math.floor(Date.now() / 1000)
+    };
+  }
+
+  aisMetrics.ignoredMessages++;
+  return null;
 }
 
 function parseBoundingBoxes() {
@@ -236,6 +321,12 @@ function parseBoundingBoxes() {
   }
   // Manaus/reach default. The first pair is south-west and north-east.
   return [[[-4.5, -62.5], [-2.5, -58.5]]];
+}
+
+function parseAisMmsiFilter() {
+  if (!process.env.AISSTREAM_FILTER_MMSI) return undefined;
+  const values = process.env.AISSTREAM_FILTER_MMSI.split(/[;,\s]+/).map((value) => value.trim()).filter(Boolean);
+  return values.length ? values : undefined;
 }
 
 function connectAisStream() {
@@ -251,16 +342,23 @@ function connectAisStream() {
     socket = new WebSocket(url);
     socket.on("open", () => {
       reconnectDelay = 5000;
-      socket.send(JSON.stringify({
+      aisMetrics.connected = true;
+      const filters = parseAisMmsiFilter();
+      const subscription = {
         APIKey: apiKey,
         BoundingBoxes: parseBoundingBoxes(),
-        FilterMessageTypes: [
-          "PositionReport",
-          "StandardClassBPositionReport",
-          "ExtendedClassBPositionReport",
-          "LongRangeAISBroadcastMessage"
-        ]
-      }));
+        FilterMessageTypes: (process.env.AISSTREAM_FILTER_TYPES
+          ? process.env.AISSTREAM_FILTER_TYPES.split(/[;,\s]+/).map((value) => value.trim()).filter(Boolean)
+          : [
+              "PositionReport",
+              "StandardClassBPositionReport",
+              "ExtendedClassBPositionReport",
+              "LongRangeAISBroadcastMessage",
+              "ShipStaticData"
+            ])
+      };
+      if (filters) subscription.FiltersShipMMSI = filters;
+      socket.send(JSON.stringify(subscription));
       console.log("AISStream connected");
     });
     socket.on("message", (data) => {
@@ -272,8 +370,14 @@ function connectAisStream() {
         console.warn("AISStream message ignored:", error.message);
       }
     });
-    socket.on("error", () => socket.close());
-    socket.on("close", () => {
+    socket.on("error", (error) => {
+      console.error("AISStream connection error:", error.message);
+      socket.close();
+    });
+    socket.on("close", (code, reason) => {
+      aisMetrics.connected = false;
+      console.warn(`AISStream closed: code=${code || "unknown"} reason=${reason ? reason.toString() : "none"}`);
+      aisMetrics.reconnects++;
       clearTimeout(reconnectTimer);
       reconnectTimer = setTimeout(connect, reconnectDelay);
       reconnectDelay = Math.min(reconnectDelay * 2, 60000);

@@ -23,6 +23,16 @@ APRS_IS_HOST=rotate.aprs2.net APRS_IS_CALLSIGN=SEUCALL APRS_IS_PASSCODE=12345 np
 
 Para AISStream, defina `AISSTREAM_API_KEY` no arquivo `.env` local (copie `.env.example`). A chave não deve ser enviada ao repositório. A área padrão cobre Manaus e o rio próximo; substitua `AISSTREAM_BOUNDING_BOXES` por pares `[[southWestLat,southWestLon],[northEastLat,northEastLon]]`.
 
+O coletor suporta assinaturas geográficas, filtros por MMSI (`AISSTREAM_FILTER_MMSI`) e tipos de mensagem (`AISSTREAM_FILTER_TYPES`). Ele recebe posições, mensagens de classe B, transmissão de longo alcance, dados estáticos do navio e dados de viagem quando disponíveis na assinatura.
+
+- `/health`: estado operacional JSON do HTTP, clientes WebSocket e AISStream.
+- `/api/status`: métricas detalhadas sem cache, incluindo tipos de mensagem, MMSIs vistos, mensagens ignoradas e reconexões.
+- `POST /ingest/ais`: ingestão de posição ou dados estáticos AIS pelo backend.
+- `POST /ingest/radio`: ingestão de fontes APRS, LoRa, checkpoints ou rádio em geral.
+- `ws://host/ws` ou `wss://host/ws`: entrega normalizada para o painel em tempo real.
+
+Mensagens estáticas podem atualizar nome, indicativo, IMO, tipo, destino, calado e última origem. Mensagens sem latitude não sobrescrevem coordenadas existentes.
+
 ```env
 AISSTREAM_API_KEY=SUA_CHAVE_AISSTREAM
 AISSTREAM_BOUNDING_BOXES=[[[-4.5,-62.5],[-2.5,-58.5]]]
