@@ -1,8 +1,8 @@
 "use strict";
 
-// Preencha os dois valores antes de publicar. NUNCA exponha chave com billing sem restrições de domínio.
+// Google Maps recebe uma chave de navegador pública; restrinja-a por domínio HTTP no Google Cloud.
 const RioRadarConfig = Object.freeze({
-  googleMapsApiKey: "SUA_API_KEY",
+  googleMapsApiKey: "AIzaSyBWAlAkYpeqU4H5lylamtoWg0TtSKU9YBQ",
   radioWebSocketUrl: "",
   radioReconnectDelayMs: 5000
 });
